@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from .events import SYSMON_CHANNEL
 
@@ -77,12 +77,15 @@ def live_events(
     query: str = "*",
     stop_event: threading.Event | None = None,
     duration: float | None = None,
+    on_subscribe: Callable[[], None] | None = None,
 ) -> Iterator[str]:
     """Yield Sysmon event XML strings as they are written to the event log.
 
     A pull subscription (signal event + EvtNext) is used instead of a push
     callback.  This avoids a lingering pywin32 callback thread and lets the
-    caller stop cleanly with a duration or stop event.
+    caller stop cleanly with a duration or stop event.  ``on_subscribe`` (if
+    given) runs once the event log subscription is active, just before the
+    first event is awaited.
     """
 
     win32evtlog = _win32()
@@ -104,6 +107,9 @@ def live_events(
             f"cannot subscribe to {channel!r}: {exc}. "
             "Is Sysmon installed and is this shell elevated?"
         ) from exc
+
+    if on_subscribe is not None:
+        on_subscribe()
 
     deadline = time.monotonic() + duration if duration else None
 

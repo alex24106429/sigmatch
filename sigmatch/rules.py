@@ -52,6 +52,22 @@ CATEGORY_TO_SYSMON: dict[str, frozenset[int]] = {
 
 ALL_SYSMON_EVENT_IDS = frozenset(range(1, 30)) | frozenset({255})
 
+
+def default_rule_paths() -> list[Path]:
+    """Return the conventional SigmaHQ rule location for this installation."""
+
+    tool_root = Path(__file__).resolve().parent.parent
+    candidates = [
+        Path.cwd() / "sigma" / "rules",
+        tool_root / "sigma" / "rules",
+        tool_root.parent / "sigma" / "rules",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return [candidate]
+    return [candidates[0]]
+
+
 LEVELS = {
     "informational": 0,
     "low": 1,

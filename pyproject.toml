@@ -15,9 +15,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+gui = ["PyQt6>=6.7"]
 
 [project.scripts]
 sigmatch = "sigmatch.cli:main"
+
+[project.gui-scripts]
+sigmatch-gui = "sigmatch.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["sigmatch*"]

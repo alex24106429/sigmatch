@@ -22,6 +22,7 @@ from .rules import (
     LoadResult,
     Rule,
     RuleSet,
+    default_rule_paths,
     expand_rule_paths,
     load_rules,
 )
@@ -55,16 +56,7 @@ TEXT_FIELDS = (
 
 
 def _default_rule_paths() -> list[Path]:
-    tool_root = Path(__file__).resolve().parent.parent
-    candidates = [
-        Path.cwd() / "sigma" / "rules",
-        tool_root / "sigma" / "rules",
-        tool_root.parent / "sigma" / "rules",
-    ]
-    for candidate in candidates:
-        if candidate.is_dir():
-            return [candidate]
-    return [candidates[0]]
+    return default_rule_paths()
 
 
 def _flatten_rule_args(values: Sequence[Sequence[str]] | None) -> list[str]:

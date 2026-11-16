@@ -28,6 +28,8 @@ alerts are emitted as text or JSONL.
 * Optional process-creation cache (`--enrich`) that adds
   `CommandLine`/`ParentImage`/`ParentCommandLine` and source/target context to
   events that do not carry those fields (Sigma "addon" fields).
+* Optional PyQt6 desktop UI that follows the live feed, shows rule matches,
+  and lets you inspect every event.
 
 ## Requirements
 
@@ -44,6 +46,31 @@ python -m pip install -e .
 Reading the Sysmon channel normally requires an elevated shell.  Sysmon itself
 must be installed and configured to log the event types you want to match.  See
 `config/sysmon-sigmatch.xml` for a test-friendly configuration.
+
+## Desktop UI
+
+The UI follows the live Sysmon channel from launch until you close the window.
+It shows every event, highlights Sigma matches, and opens event fields, matched
+rule details, and the raw XML when you click a row.  Rules are loaded in the
+background with a progress bar.
+
+```powershell
+python -m pip install PyQt6
+python sigmatch_gui.py --rules Z:\sigma
+```
+
+Or install the optional GUI entry point:
+
+```powershell
+python -m pip install -e ".[gui]"
+sigmatch-gui --rules Z:\sigma
+```
+
+The UI requests administrator rights automatically through User Account Control,
+because reading `Microsoft-Windows-Sysmon/Operational` requires elevation.  Use
+`--no-elevate` only for development; live reading will normally fail without
+administrator rights.  If the rules cannot be found or the Sysmon channel is
+unavailable, the window shows an inline message with a Retry button.
 
 ## Getting the rules
 
