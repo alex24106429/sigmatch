@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QStyleFactory
+from PyQt6.QtWidgets import QApplication, QStyleFactory, QSystemTrayIcon
 
 from sigmatch.events import parse_event_mapping, parse_event_xml
 from sigmatch.gui import (
@@ -30,6 +30,7 @@ from sigmatch.gui import (
     choose_style_name,
     event_summary,
     is_admin,
+    load_application_icon,
 )
 from sigmatch.sources import SourceError
 
@@ -320,6 +321,41 @@ def test_table_severity_styling(qapp, tmp_path):
     assert foreground is not None and foreground.name() == "#ffffff"
     assert model.data(index, Qt.ItemDataRole.DisplayRole) == "High"
     assert model.data(model.index(0, 3), Qt.ItemDataRole.DisplayRole) == "1"
+
+
+def test_application_and_notification_icons(qapp):
+    icon = load_application_icon()
+    assert not icon.isNull()
+
+    window = MainWindow(["Z:/sigma"], auto_start=False)
+    try:
+        assert not window.windowIcon().isNull()
+        assert window._tray is not None
+        assert not window._tray.icon().isNull()
+        assert window._tray.icon().cacheKey() == window.windowIcon().cacheKey()
+
+        class FakeTray:
+            def __init__(self):
+                self.calls = []
+
+            def showMessage(self, *args):
+                self.calls.append(args)
+
+        fake = FakeTray()
+        original_tray = window._tray
+        original_available = window._tray_available
+        window._tray = fake
+        window._tray_available = True
+        window._notify_checkbox.setChecked(True)
+        window._show_notification("High", "High message", False)
+        window._show_notification("Critical", "Critical message", True)
+        assert fake.calls[0][2] == QSystemTrayIcon.MessageIcon.Warning
+        assert fake.calls[1][2] == QSystemTrayIcon.MessageIcon.Critical
+        window._tray = original_tray
+        window._tray_available = original_available
+    finally:
+        window.close()
+        qapp.processEvents()
 
 
 def test_filter_checkboxes_defaults(qapp):

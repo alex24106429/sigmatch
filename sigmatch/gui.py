@@ -32,7 +32,7 @@ try:
         pyqtSignal,
         pyqtSlot,
     )
-    from PyQt6.QtGui import QColor, QFont, QFontDatabase, QPalette
+    from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette
     from PyQt6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -342,6 +342,22 @@ def choose_style_name() -> str | None:
         if name in keys:
             return keys[name]
     return None
+
+
+def load_application_icon() -> QIcon:
+    """Load the custom sigmatch icon from source or installed package data."""
+
+    package_dir = Path(__file__).resolve().parent
+    root = package_dir.parent
+    icon = QIcon()
+    candidates = (
+        package_dir / "assets" / "icon.ico",
+        package_dir / "assets" / "icon.png",
+    )
+    for path in candidates:
+        if path.is_file():
+            icon.addFile(str(path))
+    return icon
 
 
 def _rules_by_severity(rules: Iterable[Rule]) -> list[Rule]:
@@ -1170,6 +1186,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("sigmatch - Live Sysmon")
         self.resize(1320, 860)
         self.setMinimumSize(900, 560)
+        self._application_icon = load_application_icon()
+        if not self._application_icon.isNull():
+            self.setWindowIcon(self._application_icon)
 
         self._rule_paths = [
             str(path) for path in (rule_paths or default_rule_paths())
@@ -1398,10 +1417,14 @@ class MainWindow(QMainWindow):
     def _setup_notifications(self) -> None:
         try:
             self._tray_available = QSystemTrayIcon.isSystemTrayAvailable()
-            icon = self.style().standardIcon(
-                QStyle.StandardPixmap.SP_MessageBoxWarning
-            )
-            self.setWindowIcon(icon)
+            icon = self.windowIcon()
+            if icon.isNull():
+                icon = load_application_icon()
+            if icon.isNull():
+                icon = self.style().standardIcon(
+                    QStyle.StandardPixmap.SP_ComputerIcon
+                )
+                self.setWindowIcon(icon)
             tray = QSystemTrayIcon(icon, self)
             tray.setToolTip("sigmatch - Live Sysmon")
             menu = QMenu(self)
@@ -2035,6 +2058,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             pass
 
     app = QApplication([sys.argv[0] if sys.argv else "sigmatch-gui"])
+    app_icon = load_application_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     app.setApplicationName("sigmatch")
     app.setApplicationDisplayName("sigmatch")
     app.setApplicationVersion(__version__)

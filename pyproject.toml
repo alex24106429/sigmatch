@@ -25,3 +25,6 @@ sigmatch-gui = "sigmatch.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["sigmatch*"]
+
+[tool.setuptools.package-data]
+sigmatch = ["assets/*.ico", "assets/*.png"]
