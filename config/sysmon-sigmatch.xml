@@ -1,0 +1,53 @@
+<Sysmon schemaversion="4.91">
+  <!-- Test-friendly configuration used by sigmatch's integration tests.
+       It logs the event types needed for rule matching while keeping the
+       very noisy image-load / process-access / registry streams restricted
+       to test paths.  Change the SigmaTest paths to widen coverage. -->
+  <HashAlgorithms>sha256</HashAlgorithms>
+  <CheckRevocation>false</CheckRevocation>
+  <DnsLookup>false</DnsLookup>
+  <EventFiltering>
+    <ProcessCreate onmatch="exclude"/>
+    <FileCreateTime onmatch="exclude"/>
+    <NetworkConnect onmatch="exclude"/>
+    <ProcessTerminate onmatch="exclude"/>
+    <DriverLoad onmatch="exclude"/>
+    <ImageLoad onmatch="include">
+      <ImageLoaded condition="contains">sigma_test</ImageLoaded>
+    </ImageLoad>
+    <CreateRemoteThread onmatch="exclude"/>
+    <RawAccessRead onmatch="exclude"/>
+    <ProcessAccess onmatch="include">
+      <TargetImage condition="contains">sigma_test</TargetImage>
+    </ProcessAccess>
+    <FileCreate onmatch="include">
+      <TargetFilename condition="contains">sigma_test</TargetFilename>
+    </FileCreate>
+    <RegistryEvent onmatch="include">
+      <TargetObject condition="contains">SigmaTest</TargetObject>
+    </RegistryEvent>
+    <FileCreateStreamHash onmatch="include">
+      <TargetFilename condition="contains">sigma_test</TargetFilename>
+    </FileCreateStreamHash>
+    <PipeEvent onmatch="include">
+      <PipeName condition="contains">SigmaTest</PipeName>
+    </PipeEvent>
+    <WmiEvent onmatch="exclude"/>
+    <DnsQuery onmatch="exclude"/>
+    <FileDelete onmatch="include">
+      <TargetFilename condition="contains">sigma_test</TargetFilename>
+    </FileDelete>
+    <ClipboardChange onmatch="exclude"/>
+    <ProcessTampering onmatch="exclude"/>
+    <FileDeleteDetected onmatch="include">
+      <TargetFilename condition="contains">sigma_test</TargetFilename>
+    </FileDeleteDetected>
+    <FileBlockExecutable onmatch="include">
+      <TargetFilename condition="contains">sigmatch_live_blocked</TargetFilename>
+    </FileBlockExecutable>
+    <FileBlockShredding onmatch="include"/>
+    <FileExecutableDetected onmatch="include">
+      <TargetFilename condition="contains">sigma_test</TargetFilename>
+    </FileExecutableDetected>
+  </EventFiltering>
+</Sysmon>

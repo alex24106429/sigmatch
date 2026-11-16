@@ -1,0 +1,11 @@
+title: Live Test - Raw Access Read Marker
+id: 10000000-0000-0000-0000-000000000013
+status: test
+level: high
+logsource:
+  product: windows
+  category: raw_access_thread
+detection:
+  selection:
+    Device|contains: 'HarddiskVolume'
+  condition: selection

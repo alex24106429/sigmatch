@@ -1,0 +1,11 @@
+title: Live Test - Sysmon Configuration Change
+id: 10000000-0000-0000-0000-00000000000f
+status: test
+level: high
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  selection:
+    EventID: 16
+  condition: selection

@@ -1,0 +1,11 @@
+title: Live Test - Named Pipe Connected
+id: 10000000-0000-0000-0000-000000000015
+status: test
+level: high
+logsource:
+  product: windows
+  category: pipe_connected
+detection:
+  selection:
+    PipeName|contains: 'SigmaTestLivePipeConnected'
+  condition: selection

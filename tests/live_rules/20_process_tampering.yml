@@ -1,0 +1,12 @@
+title: Live Test - Process Tampering
+id: 10000000-0000-0000-0000-000000000014
+status: test
+level: high
+logsource:
+  product: windows
+  category: process_tampering
+detection:
+  selection:
+    Type: 'Image is replaced'
+    Image|endswith: '\bash.exe'
+  condition: selection

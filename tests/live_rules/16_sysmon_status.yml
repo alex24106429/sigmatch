@@ -1,0 +1,11 @@
+title: Live Test - Sysmon Service Status
+id: 10000000-0000-0000-0000-000000000010
+status: test
+level: high
+logsource:
+  product: windows
+  category: sysmon_status
+detection:
+  selection:
+    State: Started
+  condition: selection

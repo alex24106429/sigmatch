@@ -1,0 +1,11 @@
+title: Live Test - Blocked Executable
+id: 10000000-0000-0000-0000-000000000016
+status: test
+level: high
+logsource:
+  product: windows
+  category: file_block
+detection:
+  selection:
+    TargetFilename|contains: 'sigmatch_live_blocked'
+  condition: selection

@@ -1,0 +1,11 @@
+title: Live Test - Image Load Marker
+id: 10000000-0000-0000-0000-000000000009
+status: test
+level: high
+logsource:
+  product: windows
+  category: image_load
+detection:
+  selection:
+    ImageLoaded|contains: 'sigmatest_live.dll'
+  condition: selection

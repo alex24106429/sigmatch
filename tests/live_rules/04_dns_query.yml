@@ -1,0 +1,11 @@
+title: Live Test - DNS Query Marker
+id: 10000000-0000-0000-0000-000000000004
+status: test
+level: high
+logsource:
+  product: windows
+  category: dns_query
+detection:
+  selection:
+    QueryName|contains: 'example.com'
+  condition: selection

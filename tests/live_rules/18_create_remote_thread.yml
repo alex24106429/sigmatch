@@ -1,0 +1,11 @@
+title: Live Test - Create Remote Thread Marker
+id: 10000000-0000-0000-0000-000000000012
+status: test
+level: high
+logsource:
+  product: windows
+  category: create_remote_thread
+detection:
+  selection:
+    TargetImage|contains: 'sigmatest_live_target'
+  condition: selection

@@ -1,0 +1,11 @@
+title: Live Test - WMI Event
+id: 10000000-0000-0000-0000-000000000011
+status: test
+level: high
+logsource:
+  product: windows
+  category: wmi_event
+detection:
+  selection:
+    EventType|contains: 'Wmi'
+  condition: selection

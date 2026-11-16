@@ -1,0 +1,11 @@
+title: Live Test - Process Terminate Marker
+id: 10000000-0000-0000-0000-00000000000b
+status: test
+level: high
+logsource:
+  product: windows
+  category: process_termination
+detection:
+  selection:
+    Image|contains: 'sigmatest_live_terminate'
+  condition: selection

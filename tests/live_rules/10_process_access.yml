@@ -1,0 +1,11 @@
+title: Live Test - Process Access Marker
+id: 10000000-0000-0000-0000-00000000000a
+status: test
+level: high
+logsource:
+  product: windows
+  category: process_access
+detection:
+  selection:
+    TargetImage|contains: 'sigmatest_live_target'
+  condition: selection

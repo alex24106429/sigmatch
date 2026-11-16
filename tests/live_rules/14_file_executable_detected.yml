@@ -1,0 +1,11 @@
+title: Live Test - Executable Detected Marker
+id: 10000000-0000-0000-0000-00000000000e
+status: test
+level: high
+logsource:
+  product: windows
+  category: file_executable_detected
+detection:
+  selection:
+    TargetFilename|contains: 'sigmatch_live_pe'
+  condition: selection

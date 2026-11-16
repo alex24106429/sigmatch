@@ -1,0 +1,11 @@
+title: Live Test - Clipboard Change
+id: 10000000-0000-0000-0000-000000000007
+status: test
+level: high
+logsource:
+  product: windows
+  category: clipboard_capture
+detection:
+  selection:
+    EventID: 24
+  condition: selection

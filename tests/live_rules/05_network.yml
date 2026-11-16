@@ -1,0 +1,13 @@
+title: Live Test - Network Connection Marker
+id: 10000000-0000-0000-0000-000000000005
+status: test
+level: high
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  selection_image:
+    Image|contains: 'sigmatch_live'
+  selection_port:
+    DestinationPort: 80
+  condition: all of selection_*

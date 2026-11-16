@@ -1,0 +1,12 @@
+title: Live Test - Process Create Marker
+id: 10000000-0000-0000-0000-000000000001
+status: test
+level: high
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith: '\cmd.exe'
+    CommandLine|contains: 'sigmatch_live_marker'
+  condition: selection

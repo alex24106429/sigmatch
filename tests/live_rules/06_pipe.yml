@@ -1,0 +1,11 @@
+title: Live Test - Named Pipe Marker
+id: 10000000-0000-0000-0000-000000000006
+status: test
+level: high
+logsource:
+  product: windows
+  category: pipe_created
+detection:
+  selection:
+    PipeName|contains: 'SigmaTestLivePipe'
+  condition: selection

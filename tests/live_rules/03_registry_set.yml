@@ -1,0 +1,11 @@
+title: Live Test - Registry Set Marker
+id: 10000000-0000-0000-0000-000000000003
+status: test
+level: high
+logsource:
+  product: windows
+  category: registry_set
+detection:
+  selection:
+    TargetObject|contains: 'SigmaTestLive'
+  condition: selection
