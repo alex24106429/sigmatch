@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 import time
 from pathlib import Path
 
@@ -200,7 +201,9 @@ def test_event_summaries():
 
 def test_table_model_rows_and_cap(qapp):
     first = _row(parse_event_mapping({"EventID": 1, "Image": "one.exe"}))
-    second = _row(parse_event_mapping({"EventID": 2, "TargetFilename": "two.txt"}))
+    second = _row(
+        parse_event_mapping({"EventID": 11, "TargetFilename": "C:/temp/x.txt"})
+    )
     third = _row(parse_event_mapping({"EventID": 3, "Image": "three.exe"}))
     model = EventTableModel(max_rows=2)
     model.append_rows([first])
@@ -319,6 +322,132 @@ def test_table_severity_styling(qapp, tmp_path):
     assert model.data(model.index(0, 3), Qt.ItemDataRole.DisplayRole) == "1"
 
 
+def test_filter_checkboxes_defaults(qapp):
+    window = MainWindow(["Z:/sigma"], auto_start=False)
+    try:
+        assert window._matched_only_checkbox.isChecked() is False
+        assert window._notify_checkbox.isChecked() is True
+        assert window._proxy.matched_only is False
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_matched_only_filter(qapp, tmp_path):
+    _write_rule(tmp_path)
+    result, _ = _load([tmp_path])
+    outcome = result["loaded"]
+    event = parse_event_xml(EVENT_XML)
+    rules = tuple(outcome.ruleset.match(event.event_id, event.lookup))
+    matched = _row(event, rules)
+    unmatched = _row(
+        parse_event_mapping({"EventID": 11, "TargetFilename": "C:/temp/x.txt"})
+    )
+
+    window = MainWindow([str(tmp_path)], auto_start=False)
+    try:
+        window.show()
+        window._model.append_rows([unmatched, matched])
+        qapp.processEvents()
+        assert window._model.rowCount() == 2
+        assert window._proxy.rowCount() == 2
+
+        window._matched_only_checkbox.setChecked(True)
+        qapp.processEvents()
+        assert window._proxy.matched_only is True
+        assert window._model.rowCount() == 2
+        assert window._proxy.rowCount() == 1
+        source_index = window._proxy.mapToSource(window._proxy.index(0, 0))
+        assert window._model.row_at(source_index.row()) is matched
+
+        window._table.selectRow(0)
+        qapp.processEvents()
+        assert window._details_stack.currentIndex() == 1
+        assert window._detail_header.text().startswith("Event 1 -")
+
+        extra_unmatched = _row(
+            parse_event_mapping({"EventID": 12, "TargetObject": r"HKCU\Test"})
+        )
+        window._model.append_rows([extra_unmatched])
+        qapp.processEvents()
+        assert window._proxy.rowCount() == 1
+
+        window._matched_only_checkbox.setChecked(False)
+        qapp.processEvents()
+        assert window._proxy.matched_only is False
+        assert window._proxy.rowCount() == 3
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_notifications_for_high_and_critical(qapp, tmp_path):
+    _write_rule(tmp_path)
+    result, _ = _load([tmp_path])
+    outcome = result["loaded"]
+    event = parse_event_xml(EVENT_XML)
+    high_rule = tuple(outcome.ruleset.match(event.event_id, event.lookup))[0]
+    critical_rule = replace(high_rule, level="critical", title="Critical Test Rule")
+    medium_rule = replace(high_rule, level="medium", title="Medium Test Rule")
+
+    calls = []
+    window = MainWindow([str(tmp_path)], auto_start=False)
+    try:
+        window._show_notification = (
+            lambda title, message, critical: calls.append(
+                (title, message, critical)
+            )
+        )
+        window._queue_event(_row(event, (medium_rule,)))
+        assert calls == []
+
+        window._queue_event(_row(event, (high_rule,)))
+        assert len(calls) == 1
+        assert calls[0][0] == "High severity Sigma match"
+        assert calls[0][2] is False
+        assert "GUI Test Process Rule" in calls[0][1]
+
+        window._queue_event(_row(event, (high_rule, critical_rule)))
+        assert len(calls) == 2
+        assert calls[1][0] == "Critical Sigma match"
+        assert calls[1][2] is True
+
+        window._notify_checkbox.setChecked(False)
+        window._queue_event(_row(event, (critical_rule,)))
+        assert len(calls) == 2
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_notification_click_selects_event(qapp, tmp_path):
+    _write_rule(tmp_path)
+    result, _ = _load([tmp_path])
+    outcome = result["loaded"]
+    event = parse_event_xml(EVENT_XML)
+    rules = tuple(outcome.ruleset.match(event.event_id, event.lookup))
+    matched = _row(event, rules)
+    unmatched = _row(
+        parse_event_mapping({"EventID": 11, "TargetFilename": "C:/temp/x.txt"})
+    )
+
+    window = MainWindow([str(tmp_path)], auto_start=False)
+    try:
+        window.show()
+        window._model.append_rows([unmatched, matched])
+        window._matched_only_checkbox.setChecked(True)
+        qapp.processEvents()
+        window._last_notification_row = matched
+        window._notification_clicked()
+        qapp.processEvents()
+        assert window._table.currentIndex().isValid()
+        assert window._details_stack.currentIndex() == 1
+        assert window._detail_header.text().startswith("Event 1 -")
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
 def test_main_window_shows_event_details(qapp, tmp_path):
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
@@ -433,6 +562,7 @@ def test_live_window_end_to_end(qapp):
         pytest.skip("live rule fixtures are not available")
 
     window = MainWindow([str(live_rules)], auto_start=True)
+    window._notify_checkbox.setChecked(False)
     last_trigger = 0.0
     matched_row = None
     try:

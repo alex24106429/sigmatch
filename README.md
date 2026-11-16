@@ -54,6 +54,12 @@ It shows every event, highlights Sigma matches, and opens event fields, matched
 rule details, and the raw XML when you click a row.  Rules are loaded in the
 background with a progress bar.
 
+Two checkboxes above the event list control the live view.  "Only events with
+Sigma matches" is off by default and filters the table to matching events.
+"Notify for high/critical matches" is on by default and sends a Windows
+notification when a high or critical Sigma rule matches.  Clicking a
+notification brings the window forward and selects the matching event.
+
 ```powershell
 python -m pip install PyQt6
 python sigmatch_gui.py --rules Z:\sigma

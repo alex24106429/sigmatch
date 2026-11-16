@@ -25,6 +25,7 @@ try:
         QAbstractTableModel,
         QModelIndex,
         QObject,
+        QSortFilterProxyModel,
         Qt,
         QThread,
         QTimer,
@@ -35,6 +36,7 @@ try:
     from PyQt6.QtWidgets import (
         QAbstractItemView,
         QApplication,
+        QCheckBox,
         QDialog,
         QDialogButtonBox,
         QFrame,
@@ -42,6 +44,7 @@ try:
         QHeaderView,
         QLabel,
         QMainWindow,
+        QMenu,
         QPlainTextEdit,
         QProgressBar,
         QPushButton,
@@ -50,6 +53,7 @@ try:
         QStackedWidget,
         QStyle,
         QStyleFactory,
+        QSystemTrayIcon,
         QTabWidget,
         QTableView,
         QTableWidget,
@@ -895,6 +899,37 @@ class EventTableModel(QAbstractTableModel):
         return self._max_rows
 
 
+class EventFilterProxyModel(QSortFilterProxyModel):
+    """Hide events that did not match any Sigma rule, without touching the source."""
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._matched_only = False
+        self.setDynamicSortFilter(True)
+
+    @property
+    def matched_only(self) -> bool:
+        return self._matched_only
+
+    def set_matched_only(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._matched_only:
+            return
+        self._matched_only = enabled
+        self.invalidateFilter()
+
+    def filterAcceptsRow(
+        self, source_row: int, _source_parent: QModelIndex
+    ) -> bool:
+        if not self._matched_only:
+            return True
+        model = self.sourceModel()
+        if not isinstance(model, EventTableModel):
+            return True
+        row = model.row_at(source_row)
+        return bool(row is not None and row.match_count)
+
+
 # ---------------------------------------------------------------------------
 # Small UI pieces
 # ---------------------------------------------------------------------------
@@ -1154,8 +1189,16 @@ class MainWindow(QMainWindow):
         self._first_event_seen = False
         self._retry_loader_pending = False
         self._retry_monitor_pending = False
+        self._tray: QSystemTrayIcon | None = None
+        self._tray_available = False
+        self._last_notification_row: LiveEventRow | None = None
 
         self._build_ui()
+        self._setup_notifications()
+        self._matched_only_checkbox.toggled.connect(
+            self._matched_only_changed
+        )
+        self._notify_checkbox.toggled.connect(self._notify_toggled)
         self._banner.show_loading(
             "Starting sigmatch...",
             "Preparing to discover and load Sigma rules.",
@@ -1184,12 +1227,37 @@ class MainWindow(QMainWindow):
         self._banner = Banner(central)
         layout.addWidget(self._banner)
 
+        filter_bar = QHBoxLayout()
+        filter_bar.setContentsMargins(2, 0, 2, 0)
+        filter_bar.setSpacing(20)
+        self._matched_only_checkbox = QCheckBox(
+            "Only events with Sigma matches"
+        )
+        self._matched_only_checkbox.setChecked(False)
+        self._matched_only_checkbox.setToolTip(
+            "Hide live events that did not match any Sigma rule."
+        )
+        self._notify_checkbox = QCheckBox(
+            "Notify for high/critical matches"
+        )
+        self._notify_checkbox.setChecked(True)
+        self._notify_checkbox.setToolTip(
+            "Show a Windows notification when an event matches a high or "
+            "critical Sigma rule."
+        )
+        filter_bar.addWidget(self._matched_only_checkbox)
+        filter_bar.addWidget(self._notify_checkbox)
+        filter_bar.addStretch(1)
+        layout.addLayout(filter_bar)
+
         splitter = QSplitter(Qt.Orientation.Vertical, central)
         splitter.setChildrenCollapsible(False)
 
         self._model = EventTableModel(self)
+        self._proxy = EventFilterProxyModel(self)
+        self._proxy.setSourceModel(self._model)
         self._table = QTableView(splitter)
-        self._table.setModel(self._model)
+        self._table.setModel(self._proxy)
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -1317,6 +1385,124 @@ class MainWindow(QMainWindow):
         )
         self.statusBar().addWidget(self._status_label, 1)
         self.statusBar().addPermanentWidget(self._totals_label)
+
+    # -- display filter and notifications ---------------------------------
+
+    def _matched_only_changed(self, enabled: bool) -> None:
+        self._proxy.set_matched_only(enabled)
+        self._table.clearSelection()
+        self._table.setCurrentIndex(QModelIndex())
+        self._clear_details()
+        self._table.scrollToBottom()
+
+    def _setup_notifications(self) -> None:
+        try:
+            self._tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+            icon = self.style().standardIcon(
+                QStyle.StandardPixmap.SP_MessageBoxWarning
+            )
+            self.setWindowIcon(icon)
+            tray = QSystemTrayIcon(icon, self)
+            tray.setToolTip("sigmatch - Live Sysmon")
+            menu = QMenu(self)
+            menu.addAction("Open sigmatch", self._show_window)
+            menu.addAction("Quit sigmatch", self.close)
+            tray.setContextMenu(menu)
+            tray.messageClicked.connect(self._notification_clicked)
+            self._tray = tray
+            self._tray_menu = menu
+        except Exception:
+            self._tray = None
+            self._tray_available = False
+        if not self._tray_available:
+            self._notify_checkbox.setToolTip(
+                "Windows notifications are not available in this session. "
+                "Live monitoring still works."
+            )
+        self._update_tray_visibility()
+
+    def _update_tray_visibility(self) -> None:
+        if self._tray is None:
+            return
+        if self._notify_checkbox.isChecked() and self._tray_available:
+            self._tray.show()
+        else:
+            self._tray.hide()
+
+    def _notify_toggled(self, _enabled: bool) -> None:
+        self._update_tray_visibility()
+
+    def _show_window(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _notification_clicked(self) -> None:
+        self._show_window()
+        row = self._last_notification_row
+        if row is None:
+            return
+        if self._pending:
+            self._flush_events()
+        for source_row in range(self._model.rowCount() - 1, -1, -1):
+            if self._model.row_at(source_row) is row:
+                index = self._proxy.mapFromSource(
+                    self._model.index(source_row, 0)
+                )
+                if index.isValid():
+                    self._table.selectRow(index.row())
+                    self._table.scrollTo(
+                        index,
+                        QAbstractItemView.ScrollHint.PositionAtCenter,
+                    )
+                return
+
+    def _notify_high_critical(self, row: LiveEventRow) -> None:
+        relevant = [
+            rule
+            for rule in row.rules
+            if rule.level.lower() in {"high", "critical"}
+        ]
+        if not relevant:
+            return
+        relevant = _rules_by_severity(relevant)
+        critical = relevant[0].level.lower() == "critical"
+        title = (
+            "Critical Sigma match"
+            if critical
+            else "High severity Sigma match"
+        )
+        rule_titles = [rule.title for rule in relevant[:2]]
+        if len(relevant) > 2:
+            rule_titles.append(f"+{len(relevant) - 2} more")
+        summary = " ".join(row.summary.splitlines())
+        message = (
+            " | ".join(rule_titles)
+            + chr(10)
+            + f"Event {row.event.event_id} - "
+            + f"{event_type_name(row.event.event_id)}: {summary}"
+        )
+        if len(message) > 350:
+            message = message[:347] + "..."
+        self._last_notification_row = row
+        self._show_notification(title, message, critical)
+
+    def _show_notification(
+        self, title: str, message: str, critical: bool
+    ) -> None:
+        if not self._notify_checkbox.isChecked():
+            return
+        if not self._tray_available or self._tray is None:
+            return
+        icon = (
+            QSystemTrayIcon.MessageIcon.Critical
+            if critical
+            else QSystemTrayIcon.MessageIcon.Warning
+        )
+        try:
+            self._tray.showMessage(title, message, icon, 10_000)
+        except Exception:
+            pass
 
     # -- rule loading ------------------------------------------------------
 
@@ -1498,6 +1684,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText(
                 "Live - following Microsoft-Windows-Sysmon/Operational."
             )
+        if self._notify_checkbox.isChecked():
+            self._notify_high_critical(row)
 
     @pyqtSlot(str)
     def _parse_error(self, _message: str) -> None:
@@ -1562,7 +1750,8 @@ class MainWindow(QMainWindow):
         if not current.isValid():
             self._clear_details()
             return
-        row = self._model.row_at(current.row())
+        source_index = self._proxy.mapToSource(current)
+        row = self._model.row_at(source_index.row())
         if row is None:
             self._clear_details()
             return
@@ -1665,6 +1854,8 @@ class MainWindow(QMainWindow):
             self._closing = True
             self._stop_event.set()
             self._flush_timer.stop()
+            if self._tray is not None:
+                self._tray.hide()
             self._stop_thread(self._monitor_thread)
             self._stop_thread(self._loader_thread)
             self._monitor_worker = None
@@ -1832,6 +2023,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if _elevate_self(argv):
             return 0
         return 3
+
+    if sys.platform == "win32":
+        try:
+            # Without an explicit app id Windows labels tray notifications as
+            # "Python" instead of "sigmatch".
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "sigmatch"
+            )
+        except Exception:
+            pass
 
     app = QApplication([sys.argv[0] if sys.argv else "sigmatch-gui"])
     app.setApplicationName("sigmatch")
