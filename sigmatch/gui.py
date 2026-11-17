@@ -334,11 +334,27 @@ def _format_count(value: int) -> str:
     return f"{value:,}"
 
 
+def _windows_build_number() -> int | None:
+    """Return the Windows build number, or None when not running on Windows."""
+
+    if sys.platform != "win32":
+        return None
+    try:
+        return sys.getwindowsversion().build
+    except (AttributeError, OSError):
+        return None
+
+
 def choose_style_name() -> str | None:
     """Return the preferred available Qt style on this machine."""
 
     keys = {key.lower(): key for key in QStyleFactory.keys()}
-    for name in ("windows11", "windowsvista"):
+    build = _windows_build_number()
+    if build is not None and build >= 22000:
+        names = ("windows11", "windowsvista")
+    else:
+        names = ("windowsvista", "windows11")
+    for name in names:
         if name in keys:
             return keys[name]
     return None

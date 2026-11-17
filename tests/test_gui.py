@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QStyleFactory, QSystemTrayIcon
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
 from sigmatch.events import parse_event_mapping, parse_event_xml
 from sigmatch.gui import (
@@ -101,15 +101,26 @@ def _row(event=None, rules=()) -> LiveEventRow:
     return LiveEventRow(event=event, rules=tuple(rules), summary=event_summary(event))
 
 
-def test_choose_style_prefers_windows11(qapp):
-    available = {key.lower(): key for key in QStyleFactory.keys()}
-    if "windows11" in available:
-        expected = available["windows11"]
-    elif "windowsvista" in available:
-        expected = available["windowsvista"]
-    else:
-        expected = None
-    assert choose_style_name() == expected
+def test_choose_style_uses_windows11_on_windows_11(monkeypatch):
+    class WindowsStyles:
+        @staticmethod
+        def keys():
+            return ["windowsvista", "windows11", "Fusion"]
+
+    monkeypatch.setattr("sigmatch.gui.QStyleFactory", WindowsStyles)
+    monkeypatch.setattr("sigmatch.gui._windows_build_number", lambda: 26100)
+    assert choose_style_name() == "windows11"
+
+
+def test_choose_style_uses_windowsvista_on_windows_10(monkeypatch):
+    class WindowsStyles:
+        @staticmethod
+        def keys():
+            return ["windowsvista", "windows11", "Fusion"]
+
+    monkeypatch.setattr("sigmatch.gui.QStyleFactory", WindowsStyles)
+    monkeypatch.setattr("sigmatch.gui._windows_build_number", lambda: 19044)
+    assert choose_style_name() == "windowsvista"
 
 
 def test_choose_style_falls_back(monkeypatch):
@@ -119,6 +130,7 @@ def test_choose_style_falls_back(monkeypatch):
             return ["windowsvista", "Fusion"]
 
     monkeypatch.setattr("sigmatch.gui.QStyleFactory", VistaOnly)
+    monkeypatch.setattr("sigmatch.gui._windows_build_number", lambda: 26100)
     assert choose_style_name() == "windowsvista"
 
     class NoWindowsStyle:
