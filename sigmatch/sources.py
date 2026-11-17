@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
+from .bootstrap import BootstrapError, ensure_pywin32, ensure_sysmon
 from .events import SYSMON_CHANNEL
 
 
@@ -19,12 +20,9 @@ class SourceError(Exception):
 
 def _win32():
     try:
-        import win32evtlog  # type: ignore
-    except ImportError as exc:  # pragma: no cover - Windows-only dependency
-        raise SourceError(
-            "pywin32 is required for live/EVTX event reading. "
-            "Install it with: python -m pip install pywin32"
-        ) from exc
+        win32evtlog, _ = ensure_pywin32()
+    except BootstrapError as exc:  # pragma: no cover - Windows-only dependency
+        raise SourceError(str(exc)) from exc
     return win32evtlog
 
 
@@ -88,11 +86,11 @@ def live_events(
     first event is awaited.
     """
 
-    win32evtlog = _win32()
     try:
-        import win32event
-    except ImportError as exc:  # pragma: no cover - Windows-only dependency
-        raise SourceError("pywin32 win32event support is required") from exc
+        win32evtlog, win32event = ensure_pywin32()
+        ensure_sysmon(channel)
+    except BootstrapError as exc:  # pragma: no cover - Windows-only dependency
+        raise SourceError(str(exc)) from exc
 
     signal = win32event.CreateEvent(None, 0, 0, None)
     try:

@@ -33,9 +33,9 @@ alerts are emitted as text or JSONL.
 
 ## Requirements
 
-* Windows 10/11 or Windows Server with Sysmon installed.
+* Windows 10/11 or Windows Server.
 * Python 3.9+ (tested with Python 3.14).
-* `PyYAML` and `pywin32`:
+* `PyYAML`:
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -43,9 +43,17 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-Reading the Sysmon channel normally requires an elevated shell.  Sysmon itself
-must be installed and configured to log the event types you want to match.  See
-`config/sysmon-sigmatch.xml` for a test-friendly configuration.
+Live and EVTX reading need `pywin32`. If it is missing, sigmatch installs it
+automatically with pip. If Sysmon is not installed, sigmatch downloads it from
+Microsoft Sysinternals, installs it with `config/sysmon-sigmatch.xml`, and
+starts the service. Those steps need administrator rights, and failures are
+reported with manual installation instructions.
+
+Reading the Sysmon channel normally requires an elevated shell.  Sysmon must be
+configured to log the event types you want to match.  See
+`config/sysmon-sigmatch.xml` for a test-friendly configuration, or set
+`SIGMATCH_SYSMON_CONFIG` to use a different configuration file. Set
+`SIGMATCH_SYSMON_PATH` to use an existing `Sysmon64.exe`/`Sysmon.exe`.
 
 ## Desktop UI
 

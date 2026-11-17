@@ -467,9 +467,20 @@ def _live_problem(exc: BaseException) -> Problem:
     if "pywin32" in lowered or "win32event" in lowered:
         return Problem(
             "Windows event log support is missing.",
-            "Live Sysmon reading requires pywin32. Install it and restart sigmatch.",
+            "Live Sysmon reading requires pywin32, and sigmatch could not install "
+            "it automatically. Install it manually and restart sigmatch.",
             "Technical details:" + chr(10) + text + chr(10) * 2
             + "Install with: python -m pip install pywin32",
+        )
+    if "sysmon" in lowered and (
+        "automatic" in lowered or "automatically" in lowered
+    ):
+        return Problem(
+            "Sysmon could not be installed automatically.",
+            "sigmatch tried to install and start Sysmon, but Windows did not allow "
+            "it. Run sigmatch as administrator and make sure the Sysmon service can "
+            "start, then click Retry.",
+            "Technical details:" + chr(10) + text,
         )
     if (
         "access is denied" in lowered
