@@ -1,53 +1,78 @@
 <Sysmon schemaversion="4.91">
-  <!-- Test-friendly configuration used by sigmatch's integration tests.
-       It logs the event types needed for rule matching while keeping the
-       very noisy image-load / process-access / registry streams restricted
-       to test paths.  Change the SigmaTest paths to widen coverage. -->
   <HashAlgorithms>sha256</HashAlgorithms>
   <CheckRevocation>false</CheckRevocation>
-  <DnsLookup>false</DnsLookup>
+  <DnsLookup>true</DnsLookup>
+
   <EventFiltering>
     <ProcessCreate onmatch="exclude"/>
     <FileCreateTime onmatch="exclude"/>
     <NetworkConnect onmatch="exclude"/>
     <ProcessTerminate onmatch="exclude"/>
     <DriverLoad onmatch="exclude"/>
-    <ImageLoad onmatch="include">
-      <ImageLoaded condition="contains">sigma_test</ImageLoaded>
-    </ImageLoad>
     <CreateRemoteThread onmatch="exclude"/>
     <RawAccessRead onmatch="exclude"/>
-    <ProcessAccess onmatch="include">
-      <TargetImage condition="contains">sigma_test</TargetImage>
-    </ProcessAccess>
-    <FileCreate onmatch="include">
-      <TargetFilename condition="contains">sigma_test</TargetFilename>
-    </FileCreate>
-    <RegistryEvent onmatch="include">
-      <TargetObject condition="contains">SigmaTest</TargetObject>
-    </RegistryEvent>
-    <FileCreateStreamHash onmatch="include">
-      <TargetFilename condition="contains">sigma_test</TargetFilename>
-    </FileCreateStreamHash>
-    <PipeEvent onmatch="include">
-      <PipeName condition="contains">SigmaTest</PipeName>
-    </PipeEvent>
+    <FileCreateStreamHash onmatch="exclude"/>
+    <PipeEvent onmatch="exclude"/>
     <WmiEvent onmatch="exclude"/>
     <DnsQuery onmatch="exclude"/>
-    <FileDelete onmatch="include">
-      <TargetFilename condition="contains">sigma_test</TargetFilename>
-    </FileDelete>
-    <ClipboardChange onmatch="exclude"/>
     <ProcessTampering onmatch="exclude"/>
-    <FileDeleteDetected onmatch="include">
-      <TargetFilename condition="contains">sigma_test</TargetFilename>
+    <FileExecutableDetected onmatch="exclude"/>
+
+    <!-- Log all file writes and deletes anywhere, excluding only OS log/prefetch churn -->
+    <FileCreate onmatch="exclude">
+      <TargetFilename condition="end with">.pf</TargetFilename>
+      <TargetFilename condition="end with">.etl</TargetFilename>
+      <TargetFilename condition="end with">.evtx</TargetFilename>
+    </FileCreate>
+    <FileDeleteDetected onmatch="exclude">
+      <TargetFilename condition="end with">.pf</TargetFilename>
+      <TargetFilename condition="end with">.etl</TargetFilename>
+      <TargetFilename condition="end with">.evtx</TargetFilename>
     </FileDeleteDetected>
-    <FileBlockExecutable onmatch="include">
-      <TargetFilename condition="contains">sigmatch_live_blocked</TargetFilename>
-    </FileBlockExecutable>
-    <FileBlockShredding onmatch="include"/>
-    <FileExecutableDetected onmatch="include">
-      <TargetFilename condition="contains">sigma_test</TargetFilename>
-    </FileExecutableDetected>
+
+    <!-- RuleGroup ensures OR logic between different field names (Signed vs ImageLoaded) -->
+    <RuleGroup name="ImageLoad" groupRelation="or">
+      <ImageLoad onmatch="include">
+        <Signed condition="is">false</Signed>
+        <ImageLoaded condition="end with">\clr.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\clrjit.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\mscoree.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\amsi.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\dbghelp.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\dbgcore.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\comsvcs.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\samlib.dll</ImageLoaded>
+        <ImageLoaded condition="end with">\vaultcli.dll</ImageLoaded>
+      </ImageLoad>
+    </RuleGroup>
+
+    <!-- Exclude pure query/sync access masks; log all VM read/write/op/thread/full access regardless of path -->
+    <ProcessAccess onmatch="exclude">
+      <GrantedAccess condition="is">0x1000</GrantedAccess>
+      <GrantedAccess condition="is">0x0400</GrantedAccess>
+      <GrantedAccess condition="is">0x1400</GrantedAccess>
+      <GrantedAccess condition="is">0x100000</GrantedAccess>
+      <GrantedAccess condition="is">0x101000</GrantedAccess>
+      <GrantedAccess condition="is">0x101400</GrantedAccess>
+    </ProcessAccess>
+
+    <!-- Registry: persistence, UAC bypass, credential, and execution-hijack keys -->
+    <RegistryEvent onmatch="include">
+      <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+      <TargetObject condition="contains">\CurrentVersion\Policies\Explorer\Run</TargetObject>
+      <TargetObject condition="contains">\Winlogon\</TargetObject>
+      <TargetObject condition="contains">\Image File Execution Options\</TargetObject>
+      <TargetObject condition="contains">\CurrentControlSet\Services\</TargetObject>
+      <TargetObject condition="contains">\CurrentControlSet\Control\Lsa\</TargetObject>
+      <TargetObject condition="contains">\CurrentControlSet\Control\SecurityProviders\</TargetObject>
+      <TargetObject condition="contains">\CurrentControlSet\Control\Session Manager\</TargetObject>
+      <TargetObject condition="contains">\CurrentControlSet\Control\Terminal Server\</TargetObject>
+      <TargetObject condition="contains">\AppInit_DLLs</TargetObject>
+      <TargetObject condition="contains">\KnownDLLs</TargetObject>
+      <TargetObject condition="contains">\InprocServer32\</TargetObject>
+      <TargetObject condition="contains">\Classes\mscfile\</TargetObject>
+      <TargetObject condition="contains">\Classes\ms-settings\</TargetObject>
+      <TargetObject condition="contains">\Environment</TargetObject>
+    </RegistryEvent>
   </EventFiltering>
 </Sysmon>
