@@ -15,6 +15,7 @@ import base64
 import ipaddress
 import os
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -198,6 +199,55 @@ class RegexValueMatcher(ValueMatcher):
         return any(p.search(value) for p in self.patterns)
 
 
+@lru_cache(maxsize=1024)
+def _literal_fallback_pattern(source: str, mode: str) -> re.Pattern[str]:
+    """Compile the regex equivalent of a literal fast-path matcher.
+
+    It is only needed for rare non-ASCII event values, where Python's
+    ``str.lower()`` and ``re.IGNORECASE`` can disagree (for example the long
+    s or dotless i).  ASCII values use the much cheaper string operations.
+    """
+
+    return compile_sigma_string(source, mode=mode, case_sensitive=False)
+
+
+@dataclass(frozen=True)
+class LiteralValueMatcher(ValueMatcher):
+    """Fast path for Sigma values without wildcards or value transforms.
+
+    Almost every value in the SigmaHQ Windows rule set is a plain literal.
+    Matching those with ``str`` operations avoids compiling (and later
+    pickling/unpickling) tens of thousands of regular expressions.  Values
+    that use wildcards, ``|windash`` or non-ASCII text still take the regex
+    path, as does a non-ASCII event value for case-insensitive matching so the
+    exact ``re.IGNORECASE`` behaviour is preserved.
+    """
+
+    text: str
+    mode: str
+    case_sensitive: bool = False
+    source: str = ""
+
+    def matches(self, value: str | None, fields: Mapping[str, str], present: bool) -> bool:
+        if value is None:
+            return False
+        if not self.case_sensitive and not value.isascii():
+            pattern = _literal_fallback_pattern(self.source or self.text, self.mode)
+            return bool(pattern.search(value))
+        if self.case_sensitive:
+            needle = self.text
+        else:
+            needle = self.text.lower()
+            value = value.lower()
+        if self.mode == "contains":
+            return needle in value
+        if self.mode == "startswith":
+            return value.startswith(needle)
+        if self.mode == "endswith":
+            return value.endswith(needle)
+        return value == needle
+
+
 @dataclass(frozen=True)
 class NullValueMatcher(ValueMatcher):
     def matches(self, value: str | None, fields: Mapping[str, str], present: bool) -> bool:
@@ -370,6 +420,35 @@ def _scalar_to_text(value: Any) -> str:
     return str(value)
 
 
+def _literal_sigma_string(value: str, *, windash: bool) -> str | None:
+    """Return the literal represented by a Sigma string, or None if complex.
+
+    The fast literal path is only used for ASCII strings without wildcards,
+    ``|windash`` expansion or other modifiers that alter the value's meaning.
+    The unescaping rules mirror :func:`compile_sigma_string`.
+    """
+
+    if windash or not value.isascii():
+        return None
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        char = value[i]
+        if char == "\\":
+            if i + 1 < len(value) and value[i + 1] in _ESCAPABLE:
+                out.append(value[i + 1])
+                i += 2
+            else:
+                out.append("\\")
+                i += 1
+        elif char in {"*", "?"}:
+            return None
+        else:
+            out.append(char)
+            i += 1
+    return "".join(out)
+
+
 def _compile_regex_values(
     value: str,
     *,
@@ -495,6 +574,13 @@ def compile_value(field: str, raw_value: Any, modifiers: Sequence[str]) -> Value
             expand_env=False,
         )
         return _maybe_negate(RegexValueMatcher(patterns), negate)
+
+    literal_text = _expand_env_vars(text) if expand_env else text
+    literal = _literal_sigma_string(literal_text, windash=windash)
+    if literal is not None:
+        return _maybe_negate(
+            LiteralValueMatcher(literal, mode, case_sensitive, literal_text), negate
+        )
 
     patterns = _compile_regex_values(
         text,

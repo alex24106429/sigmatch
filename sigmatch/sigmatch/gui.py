@@ -595,22 +595,21 @@ class RuleLoader(QObject):
             raise _RuleLoadFailure(_rule_discovery_problem(search_paths, [], []))
 
         files: list[Path] = []
+        load_paths: list[Path] = []
         seen: set[str] = set()
         missing: list[Path] = []
         scan_errors: list[str] = []
         last_progress = 0.0
 
         def add_file(candidate: Path) -> None:
-            try:
-                resolved = candidate.resolve()
-            except OSError as exc:
-                scan_errors.append(f"{candidate}: {exc}")
-                return
-            key = os.path.normcase(str(resolved))
+            # Avoid Path.resolve() here: it performs a filesystem round-trip
+            # for every file and is extremely slow on network shares.  The
+            # normalised absolute path is enough to de-duplicate rule files.
+            key = os.path.normcase(os.path.abspath(str(candidate)))
             if key in seen:
                 return
             seen.add(key)
-            files.append(resolved)
+            files.append(candidate)
 
         for path in expanded:
             self._check_cancelled()
@@ -625,10 +624,12 @@ class RuleLoader(QObject):
             if path.is_file():
                 # An explicitly supplied file is always read, like the CLI.
                 add_file(path)
+                load_paths.append(path)
                 continue
             if not path.is_dir():
                 scan_errors.append(f"{path}: not a file or directory")
                 continue
+            load_paths.append(path)
 
             def on_walk_error(exc: OSError) -> None:
                 scan_errors.append(f"{exc.filename or path}: {exc}")
@@ -685,7 +686,7 @@ class RuleLoader(QObject):
                 last_progress = now
 
         try:
-            result = load_rules([str(item) for item in files], progress=on_progress)
+            result = load_rules([str(item) for item in load_paths], progress=on_progress)
         except (FileNotFoundError, OSError) as exc:
             raise _RuleLoadFailure(
                 Problem(

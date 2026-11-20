@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import hashlib
+import os
+import pickle
+import sys
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import yaml
 
+from . import __version__
 from .condition import ConditionNode, compile_condition
 from .matchers import (
     RuleCompileError,
@@ -150,17 +157,20 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
     return result
 
 
-def _iter_yaml_documents(path: Path) -> Iterator[Mapping[str, Any]]:
+# PyYAML ships a libyaml-backed loader whenever its C extension is available.
+# It is roughly ten times faster than the pure-Python SafeLoader and produces
+# the same basic Python objects for Sigma rule files.
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def _yaml_documents_from_text(text: str) -> list[Mapping[str, Any]]:
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise RuleCompileError(f"cannot read rule file: {exc}") from exc
-    try:
-        documents = list(yaml.safe_load_all(text))
+        documents = list(yaml.load_all(text, Loader=_YAML_LOADER))
     except yaml.YAMLError as exc:
         raise RuleCompileError(f"invalid YAML: {exc}") from exc
 
     defaults: dict[str, Any] = {}
+    merged_documents: list[Mapping[str, Any]] = []
     for document in documents:
         if not isinstance(document, Mapping):
             continue
@@ -170,7 +180,22 @@ def _iter_yaml_documents(path: Path) -> Iterator[Mapping[str, Any]]:
             continue
         merged = _deep_merge(defaults, document)
         if merged.get("detection"):
-            yield merged
+            merged_documents.append(merged)
+    return merged_documents
+
+
+def _read_rule_text(path: Path) -> tuple[str | None, str | None]:
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except (OSError, UnicodeError) as exc:
+        return None, f"cannot read rule file: {exc}"
+
+
+def _iter_yaml_documents(path: Path) -> Iterator[Mapping[str, Any]]:
+    text, error = _read_rule_text(path)
+    if error is not None or text is None:
+        raise RuleCompileError(error or "cannot read rule file")
+    yield from _yaml_documents_from_text(text)
 
 
 def _base_field(key: str) -> str:
@@ -300,24 +325,251 @@ def _rule_level_allowed(level: Any, min_level: str | None) -> bool:
     return actual >= threshold
 
 
-def _iter_rule_files(paths: Sequence[str | Path]) -> Iterator[Path]:
-    seen: set[Path] = set()
+@dataclass(frozen=True)
+class _RuleFile:
+    path: Path
+    mtime_ns: int
+    size: int
+
+
+def _rule_file(path: Path) -> _RuleFile:
+    info = path.stat()
+    return _RuleFile(path, info.st_mtime_ns, info.st_size)
+
+
+def _scan_rule_directory(root: Path) -> list[_RuleFile]:
+    """Walk *root* with ``scandir`` and collect YAML files plus their stamps.
+
+    ``Path.rglob`` is slower and, more importantly, the old loader called
+    ``Path.resolve()`` for every candidate.  On a network share that one call
+    is several milliseconds per file; ``DirEntry.stat()`` is cached by Windows
+    for entries returned by ``scandir`` and costs almost nothing.
+    """
+
+    files: list[_RuleFile] = []
+    stack = [str(root)]
+    root_string = str(root)
+    while stack:
+        directory = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.name.lower().endswith((".yml", ".yaml")):
+                            info = entry.stat()
+                            files.append(
+                                _RuleFile(Path(entry.path), info.st_mtime_ns, info.st_size)
+                            )
+                    except OSError:
+                        # An unreadable/broken entry should not abort the scan.
+                        continue
+        except OSError:
+            if directory == root_string:
+                raise
+            # Match the old rglob behaviour for unreadable subdirectories.
+            continue
+    files.sort(key=lambda item: str(item.path).lower())
+    return files
+
+
+def _iter_rule_file_records(paths: Sequence[str | Path]) -> Iterator[_RuleFile]:
+    seen: set[str] = set()
     for raw_path in paths:
         path = Path(raw_path).expanduser()
         if path.is_file():
-            candidates = [path]
+            records = [_rule_file(path)]
         elif path.is_dir():
-            candidates = sorted(
-                [*path.rglob("*.yml"), *path.rglob("*.yaml")], key=lambda p: str(p).lower()
-            )
+            records = _scan_rule_directory(path)
         else:
             raise FileNotFoundError(f"rule path does not exist: {path}")
-        for candidate in candidates:
-            resolved = candidate.resolve()
-            if resolved in seen:
+        for record in records:
+            key = os.path.normcase(os.path.abspath(str(record.path)))
+            if key in seen:
                 continue
-            seen.add(resolved)
-            yield candidate
+            seen.add(key)
+            yield record
+
+
+def _iter_rule_files(paths: Sequence[str | Path]) -> Iterator[Path]:
+    for record in _iter_rule_file_records(paths):
+        yield record.path
+
+
+def _read_rule_file_texts(
+    records: Sequence[_RuleFile],
+    progress: callable | None,
+) -> Iterator[tuple[_RuleFile, str | None, str | None]]:
+    """Read rule files concurrently, preserving discovery order.
+
+    A network share has high per-file latency, so a handful of reader threads
+    hide it almost completely (roughly 4x faster for a typical SigmaHQ tree).
+    Parsing and compilation stay in the caller because they are CPU-bound and
+    the GIL would serialise them anyway.
+    """
+
+    if len(records) <= 1:
+        for index, record in enumerate(records, 1):
+            text, error = _read_rule_text(record.path)
+            if progress is not None:
+                progress(index, record.path)
+            yield record, text, error
+        return
+
+    workers = min(8, len(records))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for index, (record, (text, error)) in enumerate(
+            zip(records, executor.map(lambda item: _read_rule_text(item.path), records)), 1
+        ):
+            if progress is not None:
+                progress(index, record.path)
+            yield record, text, error
+
+
+# ---------------------------------------------------------------------------
+# Compiled rule cache
+# ---------------------------------------------------------------------------
+
+_CACHE_FORMAT = "sigmatch-rule-cache-v2"
+_CACHE_MODULES = ("rules.py", "matchers.py", "condition.py")
+_CACHE_KEEP = 16
+
+# Only the classes/functions that appear in a cached LoadResult may be
+# unpickled.  This keeps a cache file from becoming an arbitrary-code-execution
+# vector if another process can write to the user's cache directory.
+_ALLOWED_CACHE_GLOBALS = {
+    ("collections", "Counter"),
+    ("datetime", "date"),
+    ("datetime", "datetime"),
+    ("ipaddress", "IPv4Network"),
+    ("ipaddress", "IPv6Network"),
+    ("re", "_compile"),
+}
+_ALLOWED_CACHE_MODULES = {
+    "sigmatch.rules",
+    "sigmatch.matchers",
+    "sigmatch.condition",
+}
+
+
+class _RuleCacheUnpickler(pickle.Unpickler):
+    def find_class(self, module: str, name: str) -> Any:
+        if module in _ALLOWED_CACHE_MODULES or (module, name) in _ALLOWED_CACHE_GLOBALS:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(f"unexpected object in rule cache: {module}.{name}")
+
+
+def _rule_cache_enabled(requested: bool) -> bool:
+    if not requested:
+        return False
+    value = os.environ.get("SIGMATCH_RULE_CACHE", "").strip().lower()
+    return value not in {"0", "false", "no", "off", "disabled"}
+
+
+def _rule_cache_dir() -> Path:
+    override = os.environ.get("SIGMATCH_RULE_CACHE_DIR")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / "sigmatch" / "rule-cache"
+    base = os.environ.get("XDG_CACHE_HOME")
+    if base:
+        return Path(base) / "sigmatch" / "rule-cache"
+    return Path.home() / ".cache" / "sigmatch" / "rule-cache"
+
+
+def _rule_cache_key(
+    records: Sequence["_RuleFile"],
+    min_level: str | None,
+    statuses: Sequence[str] | None,
+) -> str:
+    digest = hashlib.blake2b(digest_size=20)
+    digest.update(_CACHE_FORMAT.encode("ascii"))
+    digest.update(__version__.encode("ascii", "replace"))
+    digest.update(sys.version.encode("utf-8", "replace"))
+
+    source_dir = Path(__file__).resolve().parent
+    for name in _CACHE_MODULES:
+        source = source_dir / name
+        try:
+            info = source.stat()
+            digest.update(f"{name}:{info.st_mtime_ns}:{info.st_size}".encode("ascii"))
+        except OSError:
+            digest.update(name.encode("ascii"))
+
+    filters = repr((min_level, tuple(sorted(statuses)) if statuses else None))
+    digest.update(filters.encode("utf-8", "replace"))
+    for record in sorted(
+        records, key=lambda item: os.path.normcase(os.path.abspath(str(item.path)))
+    ):
+        key = os.path.normcase(os.path.abspath(str(record.path)))
+        digest.update(key.encode("utf-8", "surrogatepass"))
+        digest.update(f"\0{record.mtime_ns}:{record.size}\0".encode("ascii"))
+    return digest.hexdigest()
+
+
+def _load_cached_result(cache_path: Path) -> LoadResult | None:
+    try:
+        with cache_path.open("rb") as handle:
+            payload = _RuleCacheUnpickler(handle).load()
+    except (
+        OSError,
+        EOFError,
+        pickle.UnpicklingError,
+        AttributeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ):
+        return None
+    if not isinstance(payload, dict) or payload.get("format") != _CACHE_FORMAT:
+        return None
+    result = payload.get("result")
+    return result if isinstance(result, LoadResult) else None
+
+
+def _prune_rule_cache(directory: Path) -> None:
+    try:
+        files = sorted(
+            directory.glob("*.pkl"),
+            key=lambda item: item.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except OSError:
+        return
+    for stale in files[_CACHE_KEEP:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def _store_cached_result(cache_path: Path, result: LoadResult) -> None:
+    directory = cache_path.parent
+    temporary = cache_path.with_name(
+        f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with temporary.open("wb") as handle:
+            pickle.dump(
+                {"format": _CACHE_FORMAT, "result": result},
+                handle,
+                protocol=5,
+            )
+        os.replace(temporary, cache_path)
+    except (OSError, pickle.PicklingError, AttributeError, TypeError, ValueError):
+        # The cache is a best-effort optimisation; never fail a rule load
+        # because the cache directory is read-only or an object is unpicklable.
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return
+    _prune_rule_cache(directory)
 
 
 def load_rules(
@@ -326,19 +578,39 @@ def load_rules(
     min_level: str | None = None,
     statuses: Sequence[str] | None = None,
     progress: callable | None = None,
+    use_cache: bool = True,
 ) -> LoadResult:
-    """Load every Sysmon-applicable rule under *paths*."""
+    """Load every Sysmon-applicable rule under *paths*.
+
+    Compiled results are cached under the user's cache directory and validated
+    with the rule files' size and nanosecond modification time.  Set
+    ``use_cache=False`` (or ``SIGMATCH_RULE_CACHE=0``) to bypass the cache.
+    """
 
     result = LoadResult()
     seen_ids: set[str] = set()
     allowed_statuses = {s.lower() for s in statuses} if statuses else None
+    records = list(_iter_rule_file_records(paths))
 
-    for path in _iter_rule_files(paths):
+    cache_path: Path | None = None
+    if records and _rule_cache_enabled(use_cache):
+        cache_path = _rule_cache_dir() / (
+            _rule_cache_key(records, min_level, statuses) + ".pkl"
+        )
+        cached = _load_cached_result(cache_path)
+        if cached is not None:
+            if progress is not None:
+                progress(len(records), records[-1].path)
+            return cached
+
+    for record, text, read_error in _read_rule_file_texts(records, progress):
+        path = record.path
         result.files_scanned += 1
-        if progress is not None:
-            progress(result.files_scanned, path)
+        if read_error is not None or text is None:
+            result.errors.append(RuleError(str(path), read_error or "cannot read rule file"))
+            continue
         try:
-            documents = list(_iter_yaml_documents(path))
+            documents = _yaml_documents_from_text(text)
         except RuleCompileError as exc:
             result.errors.append(RuleError(str(path), str(exc)))
             continue
@@ -412,6 +684,8 @@ def load_rules(
             result.rules.append(rule)
             result.skipped[f"loaded:{mapping_reason}"] += 1
 
+    if cache_path is not None and result.rules:
+        _store_cached_result(cache_path, result)
     return result
 
 

@@ -177,3 +177,15 @@ def test_unknown_modifier_is_rejected():
 def test_invalid_regex_is_rejected():
     with pytest.raises(RuleCompileError):
         compile_value("Image", "(", ["re"])
+
+
+def test_literal_fast_path_preserves_unicode_case_semantics():
+    # re.IGNORECASE treats the long s and dotless i as case variants of ASCII
+    # letters; the string fast path must fall back to regex for those values.
+    contains = compile_value("Image", "s", ["contains"])
+    assert contains.matches("ſ", {"image": "ſ"}, True)
+    equals = compile_value("Image", "i", [])
+    assert equals.matches("ı", {"image": "ı"}, True)
+    assert compile_value("Image", "s", ["contains", "cased"]).matches(
+        "ſ", {"image": "ſ"}, True
+    ) is False

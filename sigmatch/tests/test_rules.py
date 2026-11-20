@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import sigmatch.rules as rules_module
 from sigmatch.events import parse_event_xml
 from sigmatch.rules import (
     ALL_SYSMON_EVENT_IDS,
@@ -284,3 +286,53 @@ def test_category_mapping_covers_all_sysmon_event_types():
     assert CATEGORY_TO_SYSMON["clipboard_capture"] == frozenset({24})
     assert CATEGORY_TO_SYSMON["sysmon_error"] == frozenset({255})
     assert ALL_SYSMON_EVENT_IDS == frozenset(range(1, 30)) | frozenset({255})
+
+
+def test_rule_cache_hit_and_invalidation(tmp_path, monkeypatch):
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    monkeypatch.setenv("SIGMATCH_RULE_CACHE_DIR", str(tmp_path / "cache"))
+    path = write_rule(rules_dir, "cached", title="Cached Rule")
+
+    first = load_rules([rules_dir])
+    assert [rule.title for rule in first.rules] == ["Cached Rule"]
+    assert list((tmp_path / "cache").glob("*.pkl"))
+
+    # A second identical load must come from the cache, not parse YAML again.
+    original_parser = rules_module._yaml_documents_from_text
+
+    def fail_parse(text):
+        raise AssertionError("the cache should have been used")
+
+    monkeypatch.setattr(rules_module, "_yaml_documents_from_text", fail_parse)
+    second = load_rules([rules_dir])
+    assert [rule.title for rule in second.rules] == ["Cached Rule"]
+
+    # Changing a rule invalidates the cache entry.
+    monkeypatch.setattr(rules_module, "_yaml_documents_from_text", original_parser)
+    write_rule(
+        rules_dir,
+        "cached",
+        title="Changed Rule",
+        rule_id="99999999-9999-9999-9999-999999999999",
+    )
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1_000_000))
+    third = load_rules([rules_dir])
+    assert [rule.title for rule in third.rules] == ["Changed Rule"]
+
+
+def test_rule_cache_respects_filters(tmp_path, monkeypatch):
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    monkeypatch.setenv("SIGMATCH_RULE_CACHE_DIR", str(tmp_path / "cache"))
+    write_rule(rules_dir, "low", level="low")
+    write_rule(
+        rules_dir,
+        "high",
+        level="high",
+        rule_id="77777777-7777-7777-7777-777777777777",
+    )
+
+    assert len(load_rules([rules_dir]).rules) == 2
+    high = load_rules([rules_dir], min_level="high")
+    assert [rule.level for rule in high.rules] == ["high"]

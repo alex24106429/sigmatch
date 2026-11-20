@@ -204,9 +204,19 @@ against all Sysmon events.
 * Sigma string matching is case-insensitive by default; use `|cased` for the
   rare case-sensitive value.  `|re` follows Sigma's case-sensitive default
   unless `|i` is present.
-* Loading the full SigmaHQ `rules` tree takes a few seconds (longer over a
-  network share).  Live events written while rules are loading are not
-  replayed; use `--backfill N` if you need recent history.
+* Rules are found with `os.scandir` (no per-file `Path.resolve()`), read in
+  parallel, parsed with PyYAML's libyaml loader when available, and compiled
+  with literal fast paths instead of one regex per value.  That keeps a cold
+  load of the full SigmaHQ tree to roughly a second on a local disk and a
+  couple of seconds on a network share.
+* Compiled rules are cached under `%LOCALAPPDATA%\sigmatch\rule-cache`
+  (or `$XDG_CACHE_HOME/sigmatch/rule-cache`).  The cache is validated against
+  every rule file's size and nanosecond modification time, so edits and new
+  files invalidate it automatically.  A warm start takes well under a second.
+  Set `SIGMATCH_RULE_CACHE=0` to bypass the cache, or
+  `SIGMATCH_RULE_CACHE_DIR` to put it somewhere else.
+* Live events written while rules are loading are not replayed; use
+  `--backfill N` if you need recent history.
 
 ## Development
 
