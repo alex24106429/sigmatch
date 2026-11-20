@@ -93,7 +93,13 @@ from .rules import (
 from .sources import SourceError, live_events
 
 
+# Rolling window of events that matched no rule.  Matched events are kept
+# separately (see MAX_MATCHED_ROWS) because they are the reason the window is
+# open in the first place.
 MAX_ROWS = 10_000
+# Safety valve on matched events so a long run cannot grow without bound.  The
+# oldest matched rows are dropped only once this many are held.
+MAX_MATCHED_ROWS = 50_000
 BATCH_INTERVAL_MS = 80
 MAX_PENDING_EVENTS = 10_000
 
@@ -332,6 +338,33 @@ def _local_timestamp(event: SysmonEvent) -> str:
 
 def _format_count(value: int) -> str:
     return f"{value:,}"
+
+
+def _overflow_indices(
+    rows: list[LiveEventRow], max_rows: int, max_matched_rows: int
+) -> set[int]:
+    """Return the indices of rows to drop, oldest unmatched rows first."""
+    unmatched = [index for index, row in enumerate(rows) if not row.match_count]
+    matched = [index for index, row in enumerate(rows) if row.match_count]
+    drop = set(unmatched[: max(0, len(unmatched) - max_rows)])
+    drop.update(matched[: max(0, len(matched) - max_matched_rows)])
+    return drop
+
+
+def _removal_ranges(indices: list[int]) -> list[tuple[int, int]]:
+    """Group sorted row indices into inclusive ``(start, end)`` runs.
+
+    The highest run comes first so callers can delete rows from the bottom up
+    without invalidating the indices below.
+    """
+    ranges: list[tuple[int, int]] = []
+    for index in indices:
+        if ranges and index == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], index)
+        else:
+            ranges.append((index, index))
+    ranges.reverse()
+    return ranges
 
 
 def _windows_build_number() -> int | None:
@@ -813,11 +846,16 @@ class EventTableModel(QAbstractTableModel):
     HEADERS = ("Time", "Event", "Summary", "Matches", "Level", "Record")
 
     def __init__(
-        self, parent: QObject | None = None, *, max_rows: int = MAX_ROWS
+        self,
+        parent: QObject | None = None,
+        *,
+        max_rows: int = MAX_ROWS,
+        max_matched_rows: int = MAX_MATCHED_ROWS,
     ) -> None:
         super().__init__(parent)
         self._rows: list[LiveEventRow] = []
         self._max_rows = max(1, max_rows)
+        self._max_matched_rows = max(1, max_matched_rows)
         self._bold_font = QFont(QApplication.font())
         self._bold_font.setBold(True)
 
@@ -914,17 +952,27 @@ class EventTableModel(QAbstractTableModel):
         incoming = list(rows)
         if not incoming:
             return
-        if len(incoming) > self._max_rows:
-            incoming = incoming[-self._max_rows:]
-        overflow = max(0, len(self._rows) + len(incoming) - self._max_rows)
-        if overflow:
-            self.beginRemoveRows(QModelIndex(), 0, overflow - 1)
-            del self._rows[:overflow]
-            self.endRemoveRows()
         start = len(self._rows)
         self.beginInsertRows(QModelIndex(), start, start + len(incoming) - 1)
         self._rows.extend(incoming)
         self.endInsertRows()
+        self._trim()
+
+    def _trim(self) -> None:
+        """Drop old rows, but keep rows that matched a rule.
+
+        The oldest unmatched events are removed first, so the table always
+        holds ``max_rows`` events of recent context no matter how many matches
+        pour in.  Matched rows only go away once ``max_matched_rows`` are held.
+        """
+        drop = _overflow_indices(self._rows, self._max_rows, self._max_matched_rows)
+        if not drop:
+            return
+        # Remove from the highest index down so the remaining indices stay valid.
+        for start, end in _removal_ranges(sorted(drop)):
+            self.beginRemoveRows(QModelIndex(), start, end)
+            del self._rows[start : end + 1]
+            self.endRemoveRows()
 
     def row_at(self, row: int) -> LiveEventRow | None:
         if 0 <= row < len(self._rows):
@@ -941,6 +989,10 @@ class EventTableModel(QAbstractTableModel):
     @property
     def max_rows(self) -> int:
         return self._max_rows
+
+    @property
+    def max_matched_rows(self) -> int:
+        return self._max_matched_rows
 
 
 class EventFilterProxyModel(QSortFilterProxyModel):
@@ -1729,7 +1781,7 @@ class MainWindow(QMainWindow):
         self._total_events += 1
         self._total_matches += row.match_count
         if len(self._pending) > MAX_PENDING_EVENTS:
-            del self._pending[: len(self._pending) - MAX_PENDING_EVENTS]
+            self._trim_pending()
         if not self._first_event_seen:
             self._first_event_seen = True
             self._status_label.setText(
@@ -1737,6 +1789,18 @@ class MainWindow(QMainWindow):
             )
         if self._notify_checkbox.isChecked():
             self._notify_high_critical(row)
+
+    def _trim_pending(self) -> None:
+        """Cap the queue without throwing away events that matched a rule."""
+        drop = _overflow_indices(
+            self._pending, MAX_PENDING_EVENTS, MAX_PENDING_EVENTS
+        )
+        if drop:
+            self._pending[:] = [
+                row
+                for index, row in enumerate(self._pending)
+                if index not in drop
+            ]
 
     @pyqtSlot(str)
     def _parse_error(self, _message: str) -> None:
@@ -1787,7 +1851,10 @@ class MainWindow(QMainWindow):
             self._totals_label.setText(text)
         tooltip = (
             "Counts include every event seen since this window opened. "
-            f"The table keeps the most recent {_format_count(self._model.max_rows)} events."
+            "The table keeps the most recent "
+            f"{_format_count(self._model.max_rows)} events that matched no rule, "
+            f"plus up to {_format_count(self._model.max_matched_rows)} matched events "
+            "(oldest dropped first)."
         )
         if self._totals_label.toolTip() != tooltip:
             self._totals_label.setToolTip(tooltip)

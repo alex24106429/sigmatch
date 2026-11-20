@@ -27,6 +27,7 @@ from sigmatch.gui import (
     _elevate_self,
     _elevation_command,
     _live_problem,
+    _overflow_indices,
     choose_style_name,
     event_summary,
     is_admin,
@@ -99,6 +100,16 @@ def _load(paths):
 def _row(event=None, rules=()) -> LiveEventRow:
     event = event or parse_event_xml(EVENT_XML)
     return LiveEventRow(event=event, rules=tuple(rules), summary=event_summary(event))
+
+
+def _matching_rules(tmp_path: Path) -> tuple:
+    _write_rule(tmp_path)
+    result, _ = _load([tmp_path])
+    ruleset = result["loaded"].ruleset
+    event = parse_event_xml(EVENT_XML)
+    rules = tuple(ruleset.match(event.event_id, event.lookup))
+    assert rules, result.get("failed")
+    return rules
 
 
 def test_choose_style_uses_windows11_on_windows_11(monkeypatch):
@@ -229,6 +240,67 @@ def test_table_model_rows_and_cap(qapp):
     assert "No Sigma rule matched" in model.data(
         model.index(0, 0), role=Qt.ItemDataRole.ToolTipRole
     )
+
+
+def test_table_model_keeps_matched_rows_when_trimming(qapp, tmp_path):
+    rules = _matching_rules(tmp_path)
+    matched = _row(parse_event_xml(EVENT_XML), rules)
+    first = _row(parse_event_mapping({"EventID": 1, "Image": "one.exe"}))
+    second = _row(parse_event_mapping({"EventID": 11, "TargetFilename": "x.txt"}))
+    third = _row(parse_event_mapping({"EventID": 3, "Image": "three.exe"}))
+    model = EventTableModel(max_rows=2)
+    model.append_rows([matched, first])
+    model.append_rows([second, third])
+    # Unmatched rows are trimmed to the two most recent; the match survives.
+    assert model.rowCount() == 3
+    assert [model.row_at(index) for index in range(3)] == [matched, second, third]
+    assert model.row_at(0).match_count == 1
+
+
+def test_table_model_trim_keeps_matches_from_a_single_batch(qapp, tmp_path):
+    rules = _matching_rules(tmp_path)
+    matched = _row(parse_event_xml(EVENT_XML), rules)
+    incoming = [matched] + [
+        _row(parse_event_mapping({"EventID": 1, "Image": f"{name}.exe"}))
+        for name in ("b", "c", "d", "e")
+    ]
+    model = EventTableModel(max_rows=2)
+    model.append_rows(incoming)
+    assert model.rowCount() == 3
+    assert model.row_at(0) is matched
+    assert model.row_at(1) is incoming[-2]
+    assert model.row_at(2) is incoming[-1]
+
+
+def test_table_model_matched_rows_safety_valve(qapp, tmp_path):
+    rules = _matching_rules(tmp_path)
+    matched = [
+        _row(parse_event_mapping({"EventID": 1, "Image": f"{name}.exe"}), rules)
+        for name in ("a", "b", "c")
+    ]
+    model = EventTableModel(max_rows=2, max_matched_rows=2)
+    model.append_rows(matched)
+    assert model.rowCount() == 2
+    assert model.row_at(0) is matched[1]
+    assert model.row_at(1) is matched[2]
+
+
+def test_overflow_indices_drops_oldest_unmatched_first(qapp):
+    rules = ("rule",)
+    rows = [
+        _row(parse_event_mapping({"EventID": 1, "Image": "0.exe"})),
+        _row(parse_event_mapping({"EventID": 1, "Image": "1.exe"}), rules),
+        _row(parse_event_mapping({"EventID": 1, "Image": "2.exe"})),
+        _row(parse_event_mapping({"EventID": 1, "Image": "3.exe"})),
+        _row(parse_event_mapping({"EventID": 1, "Image": "4.exe"}), rules),
+        _row(parse_event_mapping({"EventID": 1, "Image": "5.exe"})),
+    ]
+    # Two unmatched rows must go; the matches are untouched.
+    assert _overflow_indices(rows, 2, 10) == {0, 2}
+    # Matched rows only go once their own cap is exceeded, oldest first.
+    assert _overflow_indices(rows, 10, 1) == {1}
+    # Nothing to do when both windows have room.
+    assert _overflow_indices(rows, 10, 10) == set()
 
 
 def test_loader_progress_and_match(qapp, tmp_path):
